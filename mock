@@ -1,0 +1,41 @@
+import paho.mqtt.client as mqtt
+import json
+import time
+import random
+
+client = mqtt.Client()
+client.connect("localhost", 1883, 60)
+
+node_ids = [f"node_{i:03}" for i in range(1, 5)]
+
+print("Starting Mock Data Stream...")
+
+while True:
+    node_id = random.choice(node_ids)
+    payload = {
+        "id": node_id,
+        "temp": round(random.uniform(68.0, 82.0), 2),
+        "status": "active",
+        "version": "1.0.4",
+        "battery": round(random.uniform(3.2, 3.6), 2)
+    }
+    
+    client.publish(f"application/1/device/{node_id}/event/up", json.dumps(payload))
+    print(f"Sent: {node_id} at {payload['temp']}°F")
+    time.sleep(1) # Send a heartbeat every second
+
+
+# This simulates what ChirpStack sends to your Go server
+#payload = {
+#    "deviceInfo": {
+#        "devEui": "0123456789abcdef",
+#        "deviceName": "node_001"
+#    },
+#    "object": {
+#        "temp": 72.5,
+#        "battery": 3.4,
+#        "version": "1.0.4",
+#        "status": "active"
+#    },
+#    "time": "2026-04-30T15:20:00Z"
+#}
