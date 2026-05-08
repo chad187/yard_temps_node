@@ -48,7 +48,7 @@ void setup() {
 
 void loop() {
   // 1. Send sensor data
-  uint8_t payload[4] = {24, 50, 36, 10}; // Example data
+  uint8_t payload[4] = {24, 50, 36, 10}; // Example data, this may still be trying to send status but I killed that everywhere but here
   int state = node.sendReceive(payload, 4);
 
   if (state >= RADIOLIB_ERR_NONE) {

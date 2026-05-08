@@ -15,7 +15,6 @@ while True:
     payload = {
         "id": node_id,
         "temp": round(random.uniform(68.0, 82.0), 2),
-        "status": "active",
         "version": "1.0.4",
         "battery": round(random.uniform(3.2, 3.6), 2)
     }
