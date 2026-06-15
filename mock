@@ -2,39 +2,58 @@ import paho.mqtt.client as mqtt
 import json
 import time
 import random
+import base64
+import struct
 
-client = mqtt.Client()
-client.connect("localhost", 1883, 60)
+# Configuration
+BROKER = "localhost"
+# Use your specific App/Device IDs
+APP_ID = "0a941c62-ac27-44d5-877b-8160436aaaa3" 
+DEV_EUI = "1096630fc0013d99" 
 
-node_ids = [f"node_{i:03}" for i in range(1, 5)]
+# Initialize MQTT Client
+client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+client.connect(BROKER, 1883, 60)
+client.loop_start()
 
-print("Starting Mock Data Stream...")
-
-while True:
-    node_id = random.choice(node_ids)
-    payload = {
-        "id": node_id,
-        "temp": round(random.uniform(68.0, 82.0), 2),
-        "version": "1.0.4",
-        "battery": round(random.uniform(3.2, 3.6), 2)
-    }
+def create_chirpstack_payload(temp, batt, version=1):
+    temp_int = int(temp * 100)
+    batt_int = int(batt * 100)
     
-    client.publish(f"application/1/device/{node_id}/event/up", json.dumps(payload))
-    print(f"Sent: {node_id} at {payload['temp']}°F")
-    time.sleep(1) # Send a heartbeat every second
+    # '>' = Big Endian
+    # 'h' = Temp (2 bytes)
+    # 'H' = Battery (2 bytes)
+    # 'H' = Version (2 bytes) - Now supports up to 65,535
+    raw_binary = struct.pack(">hHH", temp_int, batt_int, version)
+    return base64.b64encode(raw_binary).decode('utf-8')
 
+print("Starting Mock ChirpStack Stream...")
 
-# This simulates what ChirpStack sends to your Go server
-#payload = {
-#    "deviceInfo": {
-#        "devEui": "0123456789abcdef",
-#        "deviceName": "node_001"
-#    },
-#    "object": {
-#        "temp": 72.5,
-#        "battery": 3.4,
-#        "version": "1.0.4",
-#        "status": "active"
-#    },
-#    "time": "2026-04-30T15:20:00Z"
-#}
+try:
+    while True:
+        # Generate data
+        temp = random.uniform(15.0, 35.0)
+        batt = random.uniform(3.0, 4.2)
+        version = random.randint(1, 9)
+        
+        # Create payload structure
+        payload = {
+            "deviceInfo": {
+                "deviceName": "Stack01",
+                "devEui": DEV_EUI
+            },
+            "data": create_chirpstack_payload(temp, batt, version),
+            "fPort": 1
+        }
+        
+        # Publish to ChirpStack V4 topic
+        topic = f"application/{APP_ID}/device/{DEV_EUI}/event/up"
+        client.publish(topic, json.dumps(payload))
+        
+        print(f"Sent: {temp:.2f}°C, {batt:.2f}V, Version: {version} | Base64: {payload['data']}")
+        
+        time.sleep(5)
+except KeyboardInterrupt:
+    print("Stopping mock stream...")
+    client.loop_stop()
+    client.disconnect()
