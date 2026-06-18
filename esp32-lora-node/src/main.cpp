@@ -47,6 +47,7 @@ void setup() {
 
   // Init radio
   SPI.begin(7, 8, 9, 41);
+  //SPI.begin();
   int state = radio.begin();
   if (state != RADIOLIB_ERR_NONE) {
     logPrint("Radio init failed: " + String(state));
@@ -54,12 +55,15 @@ void setup() {
   }
 
   // TCXO
-  state = radio.setTCXO(1.7);
-  //radio.setOutputPower(7);
   radio.setDio2AsRfSwitch(true);
-  radio.setRfSwitchPins(38, RADIOLIB_NC);
+  //radio.setRfSwitchPins(38, RADIOLIB_NC);
+  //success at 1.7,2.2,
+  state = radio.setTCXO(1.7);
+  
   node.setADR(true);
   //node.setDatarate(2);
+  //node.setTxPower(22);
+  //radio.setOutputPower(-9);
 
   delay(500);
   if (state != RADIOLIB_ERR_NONE) {
@@ -71,10 +75,10 @@ void setup() {
   node.beginOTAA(joinEUI, devEUI, appKey, appKey);
 
   // Try to restore saved session from NVS
-  if (loadSession()) {
-    logPrint("Session restored from NVS, skipping join...");
-    return;
-  }
+  //if (loadSession()) {
+  //  logPrint("Session restored from NVS, skipping join...");
+  //  return;
+  //}
 
   // Fresh join
   logPrint("No saved session, joining...");
@@ -95,10 +99,12 @@ void setup() {
     logPrint("Join FAILED");
     while (true) { delay(1000); }
   }
+
 }
 
 void loop() {
-  sensors.requestTemperatures(); 
+  sensors.requestTemperatures();
+  delay(750);
   float currentTemp = sensors.getTempFByIndex(0);
   Serial.print("Temperature: ");
   Serial.print(currentTemp);
@@ -129,13 +135,14 @@ void loop() {
   LoRaWANEvent_t eventDown;
   
   // 3. IMPORTANT: Change the length from 4 to 6 here!
-  int state = node.sendReceive(payload, 6, 1, downlinkData, &downlinkLen, false, NULL, &eventDown);
+  //logPrint("TX Power = " + String(radio.getOutputPower()));
+  int state = node.sendReceive(payload, 6, 1, downlinkData, &downlinkLen, true, NULL, &eventDown);
   setLED(false);
   logPrint("Uplink state: " + String(state));
   unsigned long duration = millis() - startTime;
 
-  if (state == RADIOLIB_ERR_NONE || state == RADIOLIB_LORAWAN_NO_DOWNLINK) {
-    logPrint("Uplink successful! Cycle took " + String(duration) + " ms");
+  if (state == RADIOLIB_ERR_NONE) {
+    logPrint("Network ACK received! Delivery confirmed.");
     saveSession(); // persist updated frame counters
 
     if (downlinkLen > 0) {
@@ -161,6 +168,8 @@ void loop() {
     } else {
       logPrint("No downlink received.");
     }
+  } else if (state == RADIOLIB_LORAWAN_NO_DOWNLINK) { 
+    logPrint("Transmitted but NO ACK received - network did not confirm delivery.");
   } else {
     logPrint("Uplink failed, code " + String(state) + " after " + String(duration) + " ms");
     // If session is broken, clear NVS and reboot to rejoin
