@@ -16,12 +16,19 @@ OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
 
 Preferences prefs;
+int failures;
 
 void triggerWiFiUpdate(const char* ssid, const char* pass, const char* url);
 void logPrint(const String &message);
 void saveSession();
 bool loadSession();
 void setLED(bool state);
+void processDownlink(uint8_t *data, size_t len, uint8_t port);
+void createPayload(uint8_t *payload, float temp, float batt);
+void getSensorData(float &temp, float &batt);
+bool performNetworkJoin();
+void setupLoRaWAN();
+void setupHardware();
 
 #include <RadioLib.h>
 
@@ -39,7 +46,7 @@ Radio radio = new RadioModule();
 
 // how often to send an uplink - consider legal & FUP constraints - see notes
 //const uint32_t uplinkIntervalSeconds = 5UL * 60UL;    // minutes x seconds
-const uint32_t uplinkIntervalSeconds = 15UL;    // minutes x seconds
+const uint32_t uplinkIntervalSeconds = 6UL;    // minutes x seconds
 
 // joinEUI - previous versions of LoRaWAN called this AppEUI
 // for development purposes you can use all zeros - see wiki for details
@@ -224,6 +231,87 @@ void arrayDump(uint8_t *buffer, uint16_t len) {
     Serial.print(b, HEX);
   }
   Serial.println();
+}
+
+void getSensorData(float &temp, float &batt) {
+  sensors.requestTemperatures();
+  delay(750);
+  temp = sensors.getTempFByIndex(0);
+  batt = 9.99; // Replace with actual battery logic
+  
+  Serial.print("Temperature: ");
+  Serial.print(temp);
+  Serial.println(" °F");
+}
+
+void createPayload(uint8_t *payload, float temp, float batt) {
+  int16_t tempInt = (int16_t)(temp * 100);
+  uint16_t battInt = (uint16_t)(batt * 100);
+
+  payload[0] = (tempInt >> 8) & 0xFF;
+  payload[1] = tempInt & 0xFF;
+  payload[2] = (battInt >> 8) & 0xFF;
+  payload[3] = battInt & 0xFF;
+  payload[4] = (version >> 8) & 0xFF;
+  payload[5] = version & 0xFF;
+}
+
+void processDownlink(uint8_t *data, size_t len, uint8_t port) {
+  if (port != 10) return;
+
+  logPrint("Processing FPort 10 Command...");
+  
+  // Handle JSON
+  StaticJsonDocument<256> doc;
+  DeserializationError err = deserializeJson(doc, data, len);
+  if (!err) {
+    const char* ssid = doc["s"];
+    const char* pass = doc["p"];
+    const char* url  = doc["u"];
+    if (ssid && pass && url) triggerWiFiUpdate(ssid, pass, url);
+    else logPrint("JSON missing fields.");
+  } else {
+    logPrint("Invalid JSON: " + String(err.c_str()));
+  }
+}
+
+void setupHardware() {
+  randomSeed(analogRead(0));
+  Serial.begin(115200);
+  sensors.begin();
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, HIGH);
+  delay(10000); // Allow time for Serial monitor to connect, remove for prod it is just to allow upload new firmware.
+  logPrint("--- XIAO ESP32-S3 Node Awake ---");
+}
+
+void setupLoRaWAN() {
+  ConfigLoRa_t config;
+  config.frequency = 868;
+  int state = radio.begin(config);
+  debug(state != RADIOLIB_ERR_NONE, F("Initialise radio failed"), state, true);
+
+  state = node.beginOTAA(joinEUI, devEUI, nwkKey, appKey);
+  debug(state != RADIOLIB_ERR_NONE, F("Initialise node failed"), state, true);
+}
+
+bool performNetworkJoin() {
+  if (loadSession()) {
+    logPrint("Session restored from NVS, skipping join...");
+    return true;
+  }
+
+  logPrint("No saved session, joining...");
+  for (int attempt = 1; attempt <= 50; attempt++) {
+    logPrint("Join attempt " + String(attempt) + "...");
+    int state = node.activateOTAA();
+    if (state == RADIOLIB_LORAWAN_NEW_SESSION) {
+      logPrint("Join SUCCESSFUL!");
+      saveSession();
+      return true;
+    }
+  }
+  return false;
 }
 
 #endif
