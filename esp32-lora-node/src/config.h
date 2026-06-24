@@ -5,12 +5,48 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #ifndef _RADIOLIB_EX_LORAWAN_CONFIG_H
-#define _RADIOLIB_EX_LORAWAN_CONFIG_H
+  #define _RADIOLIB_EX_LORAWAN_CONFIG_H
+#endif
+#ifndef LORA_MISO
+  #define LORA_MISO 8
+#endif
 
-uint16_t version = 2;
+#ifndef LORA_SCK
+  #define LORA_SCK 7
+#endif
 
-#define LED_PIN 21
+#ifndef LORA_MOSI
+  #define LORA_MOSI 9
+#endif
+
+#ifndef LORA_CS
+  #define LORA_CS 41
+#endif
+
+#ifndef LORA_DIO1
+  #define LORA_DIO1 39
+#endif
+
+#ifndef LORA_DIO2
+  #define LORA_DIO2 38
+#endif
+
+#ifndef LORA_BUSY
+  #define LORA_BUSY 40
+#endif
+
+#ifndef LORA_RESET
+  #define LORA_RESET 42
+#endif
+
+//make sure this matches what is in frontend
+uint16_t version = 3;
+
+//#define LED_PIN 21
 const int ONE_WIRE_BUS = D0;
+//THESE TWO LINES MUST BE CHANGED IF THE NODE IS MOVED TO A DIFFERENT YARD OR COMPANY. IF NOT UPDATES WON'T WORK
+const String COMPANY_ID = "CV_AG_GRIND";
+const String YARD_ID = "Oakdale_1";
 
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
@@ -25,10 +61,13 @@ bool loadSession();
 void setLED(bool state);
 void processDownlink(uint8_t *data, size_t len, uint8_t port);
 void createPayload(uint8_t *payload, float temp, float batt);
-void getSensorData(float &temp, float &batt);
+void getSensorData(float &temp);
 bool performNetworkJoin();
 void setupLoRaWAN();
 void setupHardware();
+void transmission();
+void goToSleep(uint64_t seconds);
+float updateAndGetBatteryPercentage();
 
 #include <RadioLib.h>
 
@@ -54,7 +93,7 @@ const uint32_t uplinkIntervalSeconds = 6UL;    // minutes x seconds
 
 // the Device EUI & two keys can be generated on the TTN console 
 #ifndef RADIOLIB_LORAWAN_DEV_EUI   // Replace with your Device EUI
-#define RADIOLIB_LORAWAN_DEV_EUI   0x1096630FC0013D99ULL;
+#define RADIOLIB_LORAWAN_DEV_EUI   0x1096630fc0013d99ULL;
 #endif
 #ifndef RADIOLIB_LORAWAN_APP_KEY   // Replace with your App Key 
 #define RADIOLIB_LORAWAN_APP_KEY   0xF8, 0x66, 0x2F, 0x22, 0x9E, 0x6F, 0x38, 0x3C, 0x2C, 0x61, 0x70, 0xCE, 0x11, 0x95, 0x8E, 0x0B
@@ -183,6 +222,12 @@ void logPrint(const String &message) {
 }
 
 void triggerWiFiUpdate(const char* ssid, const char* pass, const char* url) {
+  char euiStr[17];
+  sprintf(euiStr, "%016llX", devEUI);
+  String euiString = String(euiStr);
+  euiString.toLowerCase();
+  String fullUrl = String(url) + COMPANY_ID + ":" + YARD_ID + ":" + euiString;
+  logPrint(fullUrl);
   logPrint("Connecting to WiFi for OTA...");
   WiFi.begin(ssid, pass);
   int attempts = 0;
@@ -193,7 +238,7 @@ void triggerWiFiUpdate(const char* ssid, const char* pass, const char* url) {
   if (WiFi.status() == WL_CONNECTED) {
     logPrint("WiFi Connected. Starting OTA...");
     WiFiClient client;
-    t_httpUpdate_return ret = httpUpdate.update(client, String(url));
+    t_httpUpdate_return ret = httpUpdate.update(client, fullUrl);
     if (ret == HTTP_UPDATE_FAILED) {
       Serial.printf("OTA failed: %s\n", httpUpdate.getLastErrorString().c_str());
     }
@@ -204,11 +249,11 @@ void triggerWiFiUpdate(const char* ssid, const char* pass, const char* url) {
   WiFi.mode(WIFI_OFF);
 }
 
-void setLED(bool state) {
-  // XIAO ESP32-S3 LEDs are usually active-low (LOW = ON, HIGH = OFF)
-  // Check your specific board, but this is standard for the XIAO S3:
-  digitalWrite(LED_PIN, state ? LOW : HIGH);
-}
+//void setLED(bool state) {
+//  // XIAO ESP32-S3 LEDs are usually active-low (LOW = ON, HIGH = OFF)
+//  // Check your specific board, but this is standard for the XIAO S3:
+//  digitalWrite(LED_PIN, state ? LOW : HIGH);
+//}
 
 // helper function to display any issues
 void debug(bool failed, const __FlashStringHelper* message, int state, bool halt) {
@@ -233,11 +278,10 @@ void arrayDump(uint8_t *buffer, uint16_t len) {
   Serial.println();
 }
 
-void getSensorData(float &temp, float &batt) {
+void getSensorData(float &temp) {
   sensors.requestTemperatures();
   delay(750);
   temp = sensors.getTempFByIndex(0);
-  batt = 9.99; // Replace with actual battery logic
   
   Serial.print("Temperature: ");
   Serial.print(temp);
@@ -276,12 +320,13 @@ void processDownlink(uint8_t *data, size_t len, uint8_t port) {
 }
 
 void setupHardware() {
-  randomSeed(analogRead(0));
   Serial.begin(115200);
+  //while(!Serial) { delay(10); } //remove in production
+
   sensors.begin();
-  pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, HIGH);
-  delay(10000); // Allow time for Serial monitor to connect, remove for prod it is just to allow upload new firmware.
+  //don't use in production
+  //pinMode(LED_PIN, OUTPUT);
+  //digitalWrite(LED_PIN, HIGH);
   logPrint("--- XIAO ESP32-S3 Node Awake ---");
 }
 
@@ -289,10 +334,16 @@ void setupLoRaWAN() {
   ConfigLoRa_t config;
   config.frequency = 868;
   int state = radio.begin(config);
-  debug(state != RADIOLIB_ERR_NONE, F("Initialise radio failed"), state, true);
+  if (state != RADIOLIB_ERR_NONE) {
+      logPrint("Radio failed to init, sleeping and trying again...");
+      goToSleep(uplinkIntervalSeconds);
+  }
 
   state = node.beginOTAA(joinEUI, devEUI, nwkKey, appKey);
-  debug(state != RADIOLIB_ERR_NONE, F("Initialise node failed"), state, true);
+  if (state != RADIOLIB_ERR_NONE) {
+      logPrint("Radio failed to init, sleeping and trying again...");
+      goToSleep(uplinkIntervalSeconds);
+  }
 }
 
 bool performNetworkJoin() {
@@ -314,4 +365,96 @@ bool performNetworkJoin() {
   return false;
 }
 
-#endif
+void transmission(float currentBatt) {
+  float currentTemp;
+  uint8_t payload[6];
+  
+  getSensorData(currentTemp);
+  createPayload(payload, currentTemp, currentBatt);
+
+  uint8_t downlinkData[256];
+  size_t downlinkLen = 0;
+  LoRaWANEvent_t eventDown;
+
+  
+  int16_t state = node.sendReceive(payload, sizeof(payload), 1, downlinkData, &downlinkLen, true, NULL, &eventDown);
+
+  if (state == 0) {
+    // TX success but no ACK — confirmed uplink failure
+    saveSession();
+    prefs.begin("lorawan", false);
+    prefs.putInt("failures", failures + 1);
+    prefs.end();
+    logPrint("No ACK. Failure count: " + String(failures + 1) + "/6");
+  } else if (state > 0) {
+      // Downlink received in RX1 or RX2 — ACK confirmed
+      saveSession();
+      prefs.begin("lorawan", false);
+      prefs.putInt("failures", 0);
+      prefs.end();
+      logPrint("ACK received in window " + String(state));
+      if (downlinkLen > 0) {
+          processDownlink(downlinkData, downlinkLen, eventDown.fPort);
+      }
+  } else if (state == RADIOLIB_ERR_NETWORK_NOT_JOINED 
+        || state == RADIOLIB_ERR_SESSION_DISCARDED
+        || state == RADIOLIB_ERR_NONCES_DISCARDED) {
+      logPrint("Session invalid, rejoining...");
+      prefs.begin("lorawan", false);
+      prefs.clear();
+      prefs.end();
+      ESP.restart();
+  } else {
+      // Radio/hardware error - don't penalise
+      logPrint("Radio error: " + stateDecode(state));
+  }
+}
+
+void goToSleep(uint64_t seconds) {
+  logPrint("Preparing for deep sleep...");
+
+  radio.sleep(true);  // true = warm start, retains config
+
+  pinMode(LORA_MISO,  INPUT);
+  pinMode(LORA_MOSI,  INPUT);
+  pinMode(LORA_SCK,   INPUT);
+  pinMode(LORA_CS,    INPUT);
+  pinMode(LORA_DIO1,  INPUT);
+  pinMode(LORA_DIO2,  INPUT);
+  pinMode(LORA_BUSY,  INPUT);
+  pinMode(LORA_RESET, INPUT);
+  pinMode(ONE_WIRE_BUS, INPUT);
+
+  logPrint("Sleeping for " + String(seconds) + "s");
+  esp_sleep_enable_timer_wakeup(seconds * 1000000ULL);
+  esp_deep_sleep_start();
+}
+
+float calculateBatteryPercentage() {
+    const float INITIAL_CAPACITY = 5400.0;
+    const float CYCLE_COST = 0.120;           // Total cost per wake/transmit cycle
+    const float DAILY_SLEEP_DRAIN = 4.8;     // 0.2mA * 24h
+    const float MONTHLY_SELF_DISCHARGE = 0.015;
+
+    prefs.begin("power", false);
+    
+    // 1. Calculate time decay since last run
+    uint32_t lastCheck = prefs.getUInt("lastCheck", millis());
+    float curCap = prefs.getFloat("curCap", INITIAL_CAPACITY);
+    uint32_t now = millis();
+    float daysPassed = (float)(now - lastCheck) / 86400000.0;
+    
+    // 2. Subtract background drain & self-discharge
+    curCap -= (daysPassed * DAILY_SLEEP_DRAIN);
+    curCap -= (curCap * (MONTHLY_SELF_DISCHARGE * (daysPassed / 30.0)));
+
+    // 3. Subtract the fixed cost of this full cycle
+    curCap -= CYCLE_COST;
+
+    // 4. Save
+    prefs.putFloat("curCap", curCap);
+    prefs.putUInt("lastCheck", now);
+    prefs.end();
+
+    return (curCap / INITIAL_CAPACITY) * 100.0;
+}
