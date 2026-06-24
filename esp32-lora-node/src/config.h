@@ -59,6 +59,7 @@ void logPrint(const String &message);
 void saveSession();
 bool loadSession();
 void setLED(bool state);
+void resetBatteryState();
 void processDownlink(uint8_t *data, size_t len, uint8_t port);
 void createPayload(uint8_t *payload, float temp, float batt);
 void getSensorData(float &temp);
@@ -85,7 +86,7 @@ Radio radio = new RadioModule();
 
 // how often to send an uplink - consider legal & FUP constraints - see notes
 //const uint32_t uplinkIntervalSeconds = 5UL * 60UL;    // minutes x seconds
-const uint32_t uplinkIntervalSeconds = 6UL;    // minutes x seconds
+const uint32_t uplinkIntervalSeconds = 60UL * 60UL * 8UL;    // minutes x seconds x hours
 
 // joinEUI - previous versions of LoRaWAN called this AppEUI
 // for development purposes you can use all zeros - see wiki for details
@@ -300,7 +301,19 @@ void createPayload(uint8_t *payload, float temp, float batt) {
   payload[5] = version & 0xFF;
 }
 
+void resetBatteryState() {
+  logPrint("Resetting battery state...");
+  prefs.begin("power", false);
+  prefs.putFloat("curCap", 5400.0);
+  prefs.end();
+}
+
 void processDownlink(uint8_t *data, size_t len, uint8_t port) {
+  if (port == 9) {
+    resetBatteryState();
+    return;
+  }
+
   if (port != 10) return;
 
   logPrint("Processing FPort 10 Command...");
@@ -432,28 +445,32 @@ void goToSleep(uint64_t seconds) {
 
 float calculateBatteryPercentage() {
     const float INITIAL_CAPACITY = 5400.0;
-    const float CYCLE_COST = 0.120;           // Total cost per wake/transmit cycle
-    const float DAILY_SLEEP_DRAIN = 4.8;     // 0.2mA * 24h
-    const float MONTHLY_SELF_DISCHARGE = 0.015;
+    
+    // Per-transmission constants derived from your requirements:
+    const float TX_COST = 0.120;             // Cost per transmission
+    const float DRAIN_PER_TX = 1.6;          // 4.8 / 3 transmissions = 1.6 per TX
+    const float SELF_DISCHARGE_PER_TX = 0.000166; // 0.015 / 90 transmissions
 
     prefs.begin("power", false);
     
-    // 1. Calculate time decay since last run
-    uint32_t lastCheck = prefs.getUInt("lastCheck", millis());
+    // Get the current stored capacity
     float curCap = prefs.getFloat("curCap", INITIAL_CAPACITY);
-    uint32_t now = millis();
-    float daysPassed = (float)(now - lastCheck) / 86400000.0;
     
-    // 2. Subtract background drain & self-discharge
-    curCap -= (daysPassed * DAILY_SLEEP_DRAIN);
-    curCap -= (curCap * (MONTHLY_SELF_DISCHARGE * (daysPassed / 30.0)));
-
-    // 3. Subtract the fixed cost of this full cycle
-    curCap -= CYCLE_COST;
-
-    // 4. Save
+    // 1. Subtract the base drain for this 8-hour window
+    curCap -= DRAIN_PER_TX;
+    
+    // 2. Subtract the cost of this transmission
+    curCap -= TX_COST;
+    
+    // 3. Subtract the fractional self-discharge
+    curCap -= (curCap * SELF_DISCHARGE_PER_TX);
+    
+    // 4. Bounds checking
+    if (curCap < 0) curCap = 0;
+    if (curCap > INITIAL_CAPACITY) curCap = INITIAL_CAPACITY;
+    
+    // 5. Persist the new capacity
     prefs.putFloat("curCap", curCap);
-    prefs.putUInt("lastCheck", now);
     prefs.end();
 
     return (curCap / INITIAL_CAPACITY) * 100.0;
