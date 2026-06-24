@@ -32,7 +32,9 @@ void setup() {
 
 void loop() {
 
-  //transmission();
+  //const float battery = calculateBatteryPercentage();
+
+  //transmission(battery);
 
   //delay(uplinkIntervalSeconds * 1000UL);
 }
