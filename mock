@@ -7,53 +7,59 @@ import struct
 
 # Configuration
 BROKER = "localhost"
-# Use your specific App/Device IDs
 APP_ID = "0a941c62-ac27-44d5-877b-8160436aaaa3" 
 DEV_EUI = "1096630fc0013d99" 
 
-# Initialize MQTT Client
 client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
 client.connect(BROKER, 1883, 60)
 client.loop_start()
 
-def create_chirpstack_payload(temp, batt, version=1):
-    temp_int = int(temp * 100)
-    batt_int = int(batt * 100)
+def create_hardware_payload(temp_f, batt_percent, version):
+    """
+    Matches the Arduino createPayload function:
+    payload[0,1] = temp * 100 (int16_t)
+    payload[2,3] = batt * 100 (uint16_t)
+    payload[4,5] = version    (uint16_t)
+    """
+    temp_int = int(temp_f * 100)
+    batt_int = int(batt_percent * 100)
     
-    # '>' = Big Endian
-    # 'h' = Temp (2 bytes)
-    # 'H' = Battery (2 bytes)
-    # 'H' = Version (2 bytes) - Now supports up to 65,535
+    # '>' = Big Endian (Network order)
+    # 'h' = Signed Short (2 bytes for temp)
+    # 'H' = Unsigned Short (2 bytes for battery)
+    # 'H' = Unsigned Short (2 bytes for version)
     raw_binary = struct.pack(">hHH", temp_int, batt_int, version)
     return base64.b64encode(raw_binary).decode('utf-8')
 
-print("Starting Mock ChirpStack Stream...")
+print("Starting High-Fidelity Hardware Mock...")
 
 try:
     while True:
-        # Generate data
-        temp = random.uniform(15.0, 35.0)
-        batt = random.uniform(3.0, 4.2)
-        version = random.randint(1, 9)
+        # Hardware-specific ranges
+        temp_f = random.uniform(50.0, 95.0)  # Simulating Fahrenheit
+        batt_percent = random.uniform(0.0, 100.0)
+        version = 3 # Matches your uint16_t version = 3;
         
-        # Create payload structure
+        payload_data = create_hardware_payload(temp_f, batt_percent, version)
+        
+        # Structure matching ChirpStack v4 JSON API
         payload = {
             "deviceInfo": {
-                "deviceName": "Stack01",
+                "deviceName": "XIAO_S3_Node",
                 "devEui": DEV_EUI
             },
-            "data": create_chirpstack_payload(temp, batt, version),
+            "data": payload_data,
             "fPort": 1
         }
         
-        # Publish to ChirpStack V4 topic
         topic = f"application/{APP_ID}/device/{DEV_EUI}/event/up"
         client.publish(topic, json.dumps(payload))
         
-        print(f"Sent: {temp:.2f}°C, {batt:.2f}V, Version: {version} | Base64: {payload['data']}")
+        print(f"Sent: {temp_f:.2f}°F, {batt_percent:.2f}%, Ver: {version} | Base64: {payload_data}")
         
-        time.sleep(5)
+        # Matching your 8-hour interval behavior (reduced for testing)
+        time.sleep(5) 
 except KeyboardInterrupt:
-    print("Stopping mock stream...")
+    print("Stopping...")
     client.loop_stop()
     client.disconnect()
