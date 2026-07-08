@@ -1,4 +1,6 @@
-#include <WiFi.h>
+//#include <WiFi.h>
+//production
+#include <WiFiClientSecure.h>
 #include <HTTPUpdate.h>
 #include <ArduinoJson.h>
 #include <Preferences.h>
@@ -44,6 +46,7 @@ uint16_t version = 3;
 
 //#define LED_PIN 21
 const int ONE_WIRE_BUS = D0;
+const int SENSOR_POWER_PIN = D1;
 //THESE TWO LINES MUST BE CHANGED IF THE NODE IS MOVED TO A DIFFERENT YARD OR COMPANY. IF NOT UPDATES WON'T WORK
 const String COMPANY_ID = "CV_AG_GRIND";
 const String YARD_ID = "Oakdale_1";
@@ -85,7 +88,7 @@ float updateAndGetBatteryPercentage();
 Radio radio = new RadioModule();
 
 // how often to send an uplink - consider legal & FUP constraints - see notes
-//const uint32_t uplinkIntervalSeconds = 5UL * 60UL;    // minutes x seconds
+//const uint32_t uplinkIntervalSeconds =  6UL;    // minutes x seconds
 const uint32_t uplinkIntervalSeconds = 60UL * 60UL * 8UL;    // minutes x seconds x hours
 
 // joinEUI - previous versions of LoRaWAN called this AppEUI
@@ -94,13 +97,13 @@ const uint32_t uplinkIntervalSeconds = 60UL * 60UL * 8UL;    // minutes x second
 
 // the Device EUI & two keys can be generated on the TTN console 
 #ifndef RADIOLIB_LORAWAN_DEV_EUI   // Replace with your Device EUI
-#define RADIOLIB_LORAWAN_DEV_EUI   0x1096630fc0013d99ULL;
+#define RADIOLIB_LORAWAN_DEV_EUI   0xe6749dff043f5411ULL;
 #endif
 #ifndef RADIOLIB_LORAWAN_APP_KEY   // Replace with your App Key 
-#define RADIOLIB_LORAWAN_APP_KEY   0xF8, 0x66, 0x2F, 0x22, 0x9E, 0x6F, 0x38, 0x3C, 0x2C, 0x61, 0x70, 0xCE, 0x11, 0x95, 0x8E, 0x0B
+#define RADIOLIB_LORAWAN_APP_KEY   0xe1, 0x49, 0x79, 0x99, 0x07, 0x78, 0x73, 0x38, 0x9d, 0x2e, 0x7f, 0x46, 0x47, 0x44, 0x8c, 0x73
 #endif
 #ifndef RADIOLIB_LORAWAN_NWK_KEY   // Put your Nwk Key here
-#define RADIOLIB_LORAWAN_NWK_KEY   0xF8, 0x66, 0x2F, 0x22, 0x9E, 0x6F, 0x38, 0x3C, 0x2C, 0x61, 0x70, 0xCE, 0x11, 0x95, 0x8E, 0x0B
+#define RADIOLIB_LORAWAN_NWK_KEY   0xe1, 0x49, 0x79, 0x99, 0x07, 0x78, 0x73, 0x38, 0x9d, 0x2e, 0x7f, 0x46, 0x47, 0x44, 0x8c, 0x73
 #endif
 
 // for the curious, the #ifndef blocks allow for automated testing &/or you can
@@ -238,7 +241,9 @@ void triggerWiFiUpdate(const char* ssid, const char* pass, const char* url) {
   }
   if (WiFi.status() == WL_CONNECTED) {
     logPrint("WiFi Connected. Starting OTA...");
-    WiFiClient client;
+    //WiFiClient client; testing
+    WiFiClientSecure client;
+    client.setInsecure();
     t_httpUpdate_return ret = httpUpdate.update(client, fullUrl);
     if (ret == HTTP_UPDATE_FAILED) {
       Serial.printf("OTA failed: %s\n", httpUpdate.getLastErrorString().c_str());
@@ -280,9 +285,22 @@ void arrayDump(uint8_t *buffer, uint16_t len) {
 }
 
 void getSensorData(float &temp) {
+  // 1. Power on the sensor
+  pinMode(SENSOR_POWER_PIN, OUTPUT);
+  digitalWrite(SENSOR_POWER_PIN, HIGH);
+  
+  // 2. Give the sensor time to stabilize (Critical!)
+  delay(50); 
+  
+  // 3. Initialize and read
+  sensors.begin();
   sensors.requestTemperatures();
-  delay(750);
+  delay(750); // DS18B20 conversion time
   temp = sensors.getTempFByIndex(0);
+  
+  // 4. Power off the sensor immediately after reading
+  digitalWrite(SENSOR_POWER_PIN, LOW);
+  pinMode(SENSOR_POWER_PIN, INPUT); // Tri-state to prevent leakage
   
   Serial.print("Temperature: ");
   Serial.print(temp);
@@ -304,7 +322,7 @@ void createPayload(uint8_t *payload, float temp, float batt) {
 void resetBatteryState() {
   logPrint("Resetting battery state...");
   prefs.begin("power", false);
-  prefs.putFloat("curCap", 5400.0);
+  prefs.putFloat("curCap", 9000.0);
   prefs.end();
 }
 
@@ -334,7 +352,7 @@ void processDownlink(uint8_t *data, size_t len, uint8_t port) {
 
 void setupHardware() {
   Serial.begin(115200);
-  //while(!Serial) { delay(10); } //remove in production
+  while(!Serial) { delay(10); } //remove in production
 
   sensors.begin();
   //don't use in production
@@ -423,11 +441,13 @@ void transmission(float currentBatt) {
   }
 }
 
+
 void goToSleep(uint64_t seconds) {
   logPrint("Preparing for deep sleep...");
 
-  radio.sleep(true);  // true = warm start, retains config
+  radio.sleep(true);
 
+  // Existing pin configurations
   pinMode(LORA_MISO,  INPUT);
   pinMode(LORA_MOSI,  INPUT);
   pinMode(LORA_SCK,   INPUT);
@@ -436,7 +456,14 @@ void goToSleep(uint64_t seconds) {
   pinMode(LORA_DIO2,  INPUT);
   pinMode(LORA_BUSY,  INPUT);
   pinMode(LORA_RESET, INPUT);
+  
+  // Ensure data line is floating
   pinMode(ONE_WIRE_BUS, INPUT);
+  
+  // Ensure power pin is LOW and set to INPUT to save power
+  pinMode(SENSOR_POWER_PIN, OUTPUT);
+  digitalWrite(SENSOR_POWER_PIN, LOW);
+  pinMode(SENSOR_POWER_PIN, INPUT); 
 
   logPrint("Sleeping for " + String(seconds) + "s");
   esp_sleep_enable_timer_wakeup(seconds * 1000000ULL);
@@ -444,32 +471,41 @@ void goToSleep(uint64_t seconds) {
 }
 
 float calculateBatteryPercentage() {
-    const float INITIAL_CAPACITY = 5400.0;
+    // 1. INITIAL CAPACITY: 9000mAh (EEMB ER26500)
+    const float INITIAL_CAPACITY = 9000.0;
     
-    // Per-transmission constants derived from your requirements:
-    const float TX_COST = 0.120;             // Cost per transmission
-    const float DRAIN_PER_TX = 1.6;          // 4.8 / 3 transmissions = 1.6 per TX
-    const float SELF_DISCHARGE_PER_TX = 0.000166; // 0.015 / 90 transmissions
+    // 2. POWER DRAIN CONSTANTS (mAh per 8-hour cycle):
+    
+    // TX_COST: Energy spike for LoRa handshake + transmission burst.
+    // Based on typical SX1262 TX profile (approx 120µAh per event).
+    const float TX_COST = 0.120; 
+    
+    // SLEEP_DRAIN_8HR: Deep sleep baseline for XIAO ESP32-S3.
+    // Measured draw: ~0.021mA (includes chip sleep + LDO quiescent).
+    // Math: 0.021mA * 8 hours = 0.168 mAh.
+    const float SLEEP_DRAIN_8HR = 0.168; 
+    
+    // SELF_DISCHARGE_8HR: Chemical leakage (1% per year for Li-SOCl2).
+    // 9000mAh * 0.01 / 1095 windows per year = 0.082 mAh.
+    const float SELF_DISCHARGE_8HR = 0.082; 
 
     prefs.begin("power", false);
     
-    // Get the current stored capacity
+    // Get the current "bank balance" of the battery
     float curCap = prefs.getFloat("curCap", INITIAL_CAPACITY);
     
-    // 1. Subtract the base drain for this 8-hour window
-    curCap -= DRAIN_PER_TX;
+    // 3. ACCOUNTING:
+    // Subtract total mAh consumed by all processes during the last 8 hours.
+    float totalDrain = TX_COST + SLEEP_DRAIN_8HR + SELF_DISCHARGE_8HR;
+    curCap -= totalDrain;
     
-    // 2. Subtract the cost of this transmission
-    curCap -= TX_COST;
-    
-    // 3. Subtract the fractional self-discharge
-    curCap -= (curCap * SELF_DISCHARGE_PER_TX);
-    
-    // 4. Bounds checking
+    // 4. BOUNDS CHECKING: 
+    // Prevent the capacity from dropping below 0 or exceeding the max.
     if (curCap < 0) curCap = 0;
     if (curCap > INITIAL_CAPACITY) curCap = INITIAL_CAPACITY;
     
-    // 5. Persist the new capacity
+    // 5. PERSISTENCE:
+    // Save the new balance to NVS so it persists through deep sleep.
     prefs.putFloat("curCap", curCap);
     prefs.end();
 
